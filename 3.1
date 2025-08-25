@@ -1,0 +1,94 @@
+const express = require("express");
+const app = express();
+
+// Sample product data
+const products = [
+  {
+    id: 1,
+    name: "Wireless Headphones",
+    description: "High quality noise-cancelling headphones",
+    price: 199.99,
+    image: "https://via.placeholder.com/150"
+  },
+  {
+    id: 2,
+    name: "Smartwatch",
+    description: "Track your fitness and health",
+    price: 149.99,
+    image: "https://via.placeholder.com/150"
+  }
+];
+
+// API route
+app.get("/api/products", (req, res) => {
+  res.json(products);
+});
+
+// Serve frontend HTML
+app.get("/", (req, res) => {
+  res.send(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Product Cards</title>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f5f5f5; padding: 20px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; }
+    .card { background: white; padding: 15px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+    .card img { width: 100%; border-radius: 10px; }
+    .card h2 { margin: 10px 0 5px; font-size: 18px; }
+    .card p { margin: 5px 0; color: #555; }
+    .price { color: green; font-weight: bold; margin-top: 8px; }
+    button { margin-top: 10px; width: 100%; padding: 10px; border: none; background: #007BFF; color: white; border-radius: 5px; cursor: pointer; }
+    button:hover { background: #0056b3; }
+  </style>
+</head>
+<body>
+  <h1>Product Store</h1>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    function ProductCard({ name, description, price, image }) {
+      return (
+        <div className="card">
+          <img src={image} alt={name} />
+          <h2>{name}</h2>
+          <p>{description}</p>
+          <p className="price">$ {price}</p>
+          <button>Buy Now</button>
+        </div>
+      );
+    }
+
+    function App() {
+      const [products, setProducts] = React.useState([]);
+
+      React.useEffect(() => {
+        fetch("/api/products")
+          .then(res => res.json())
+          .then(data => setProducts(data));
+      }, []);
+
+      return (
+        <div className="grid">
+          {products.map(p => (
+            <ProductCard key={p.id} {...p} />
+          ))}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
+  `);
+});
+
+// Start server
+const PORT = 3000;
+app.listen(PORT, () => console.log(`App running at http://localhost:${PORT}`));
