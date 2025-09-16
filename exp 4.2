@@ -1,0 +1,299 @@
+/**
+ * app.js
+ * Single-file Student Management System (MVC-style) using MongoDB + Mongoose + Express
+ *
+ * Features:
+ * - Student Mongoose model (Model)
+ * - Controller functions for CRUD (Controller)
+ * - Express routes wiring controller functions (Routes)
+ * - Minimal single-page frontend (View) to list/add students using fetch()
+ *
+ * Usage:
+ * 1. npm init -y
+ * 2. npm i express mongoose
+ * 3. Set MONGO_URI environment variable or edit the default below.
+ * 4. node app.js
+ *
+ * Default endpoints:
+ * - GET  /api/students         -> list all
+ * - POST /api/students         -> create { name, email, age, course }
+ * - GET  /api/students/:id     -> get one
+ * - PUT  /api/students/:id     -> update { name, email, age, course }
+ * - DELETE /api/students/:id   -> delete
+ * - GET  /                      -> simple frontend
+ */
+
+const express = require("express");
+const mongoose = require("mongoose");
+const path = require("path");
+
+const app = express();
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+/* ----------------------- Configuration ----------------------- */
+const PORT = process.env.PORT || 3000;
+const MONGO_URI =
+  process.env.MONGO_URI ||
+  "mongodb://127.0.0.1:27017/student_mgmt_example"; // change if needed
+
+/* -------------------------- MODEL ---------------------------- */
+/**
+ * Student schema & model (Model layer)
+ */
+const studentSchema = new mongoose.Schema(
+  {
+    name: { type: String, required: true, trim: true },
+    email: {
+      type: String,
+      required: true,
+      trim: true,
+      lowercase: true,
+      unique: true,
+      match: /^\S+@\S+\.\S+$/,
+    },
+    age: { type: Number, min: 1, max: 150 },
+    course: { type: String, trim: true, default: "Undeclared" },
+  },
+  { timestamps: true }
+);
+
+const Student = mongoose.model("Student", studentSchema);
+
+/* ------------------------ CONTROLLER ------------------------- */
+/**
+ * Controller functions (Controller layer) — each performs DB ops and returns JSON
+ */
+
+const studentController = {
+  // Create student
+  async create(req, res) {
+    try {
+      const { name, email, age, course } = req.body;
+      const stud = new Student({ name, email, age, course });
+      const saved = await stud.save();
+      return res.status(201).json({ success: true, data: saved });
+    } catch (err) {
+      if (err.code === 11000) {
+        return res
+          .status(400)
+          .json({ success: false, message: "Email already exists" });
+      }
+      if (err.name === "ValidationError") {
+        return res
+          .status(400)
+          .json({ success: false, message: err.message });
+      }
+      console.error(err);
+      return res.status(500).json({ success: false, message: "Server error" });
+    }
+  },
+
+  // Get all students, optional query ?q=nameOrEmail
+  async list(req, res) {
+    try {
+      const q = req.query.q;
+      let filter = {};
+      if (q) {
+        const re = new RegExp(q, "i");
+        filter = { $or: [{ name: re }, { email: re }, { course: re }] };
+      }
+      const students = await Student.find(filter).sort({ createdAt: -1 }).lean();
+      return res.json({ success: true, data: students });
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({ success: false, message: "Server error" });
+    }
+  },
+
+  // Get one
+  async getOne(req, res) {
+    try {
+      const { id } = req.params;
+      const stud = await Student.findById(id).lean();
+      if (!stud) return res.status(404).json({ success: false, message: "Not found" });
+      return res.json({ success: true, data: stud });
+    } catch (err) {
+      console.error(err);
+      return res.status(400).json({ success: false, message: "Invalid id" });
+    }
+  },
+
+  // Update
+  async update(req, res) {
+    try {
+      const { id } = req.params;
+      const updates = (({ name, email, age, course }) => ({ name, email, age, course }))(req.body);
+      const updated = await Student.findByIdAndUpdate(id, updates, {
+        new: true,
+        runValidators: true,
+      }).lean();
+      if (!updated) return res.status(404).json({ success: false, message: "Not found" });
+      return res.json({ success: true, data: updated });
+    } catch (err) {
+      console.error(err);
+      if (err.name === "ValidationError") {
+        return res.status(400).json({ success: false, message: err.message });
+      }
+      return res.status(400).json({ success: false, message: "Invalid id or data" });
+    }
+  },
+
+  // Delete
+  async remove(req, res) {
+    try {
+      const { id } = req.params;
+      const del = await Student.findByIdAndDelete(id).lean();
+      if (!del) return res.status(404).json({ success: false, message: "Not found" });
+      return res.json({ success: true, message: "Deleted", data: del });
+    } catch (err) {
+      console.error(err);
+      return res.status(400).json({ success: false, message: "Invalid id" });
+    }
+  },
+};
+
+/* -------------------------- ROUTES --------------------------- */
+/**
+ * Routes (Route layer) — map endpoints to controller functions
+ */
+const apiRouter = express.Router();
+
+apiRouter.get("/students", (req, res) => studentController.list(req, res));
+apiRouter.post("/students", (req, res) => studentController.create(req, res));
+apiRouter.get("/students/:id", (req, res) => studentController.getOne(req, res));
+apiRouter.put("/students/:id", (req, res) => studentController.update(req, res));
+apiRouter.delete("/students/:id", (req, res) => studentController.remove(req, res));
+
+app.use("/api", apiRouter);
+
+/* --------------------------- VIEW ---------------------------- */
+/**
+ * Minimal frontend for testing — served at GET /
+ * This is a tiny SPA that lists students and allows adding & deleting.
+ */
+app.get("/", (req, res) => {
+  res.setHeader("Content-Type", "text/html");
+  res.send(`<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Student Management (Single-file MVC)</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 900px; margin: 30px auto; padding: 0 1rem; }
+      header { display:flex; justify-content:space-between; align-items:center; }
+      form { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:1rem; }
+      input, button { padding:8px; font-size:14px; }
+      table { width:100%; border-collapse:collapse; margin-top:1rem; }
+      th,td { border:1px solid #ddd; padding:8px; text-align:left; }
+      tr:nth-child(even){ background:#f9f9f9 }
+      .small { font-size:12px; color:#666 }
+      .btn-danger { background:#d9534f; color:white; border:none; padding:6px 10px; cursor:pointer; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Student Management</h1>
+      <div class="small">Single-file MVC · MongoDB · Express</div>
+    </header>
+
+    <section>
+      <form id="studentForm">
+        <input name="name" placeholder="Name" required />
+        <input name="email" placeholder="Email" required />
+        <input name="age" placeholder="Age" type="number" />
+        <input name="course" placeholder="Course" />
+        <button type="submit">Add Student</button>
+      </form>
+
+      <input id="search" placeholder="Search by name/email/course" style="width:100%; padding:8px" />
+      <div id="list"></div>
+    </section>
+
+    <script>
+      const api = '/api/students';
+
+      async function fetchList(q) {
+        const url = q ? api + '?q=' + encodeURIComponent(q) : api;
+        const res = await fetch(url);
+        const j = await res.json();
+        if (!j.success) return alert('Failed to load students');
+        renderTable(j.data);
+      }
+
+      function renderTable(data) {
+        if (!data || data.length === 0) {
+          document.getElementById('list').innerHTML = '<p>No students yet.</p>';
+          return;
+        }
+        const rows = data.map(s => \`
+          <tr>
+            <td>\${s._id}</td>
+            <td>\${escapeHtml(s.name)}</td>
+            <td>\${escapeHtml(s.email)}</td>
+            <td>\${s.age||''}</td>
+            <td>\${escapeHtml(s.course||'')}</td>
+            <td>
+              <button onclick="del('\${s._id}')" class="btn-danger">Delete</button>
+            </td>
+          </tr>\`).join('');
+        document.getElementById('list').innerHTML = \`
+          <table>
+            <thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Age</th><th>Course</th><th>Actions</th></tr></thead>
+            <tbody>\${rows}</tbody>
+          </table>
+        \`;
+      }
+
+      function escapeHtml(s){ if(!s) return ''; return s.replace(/[&<>"]/g, c=>({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c])); }
+
+      document.getElementById('studentForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const fd = new FormData(e.target);
+        const payload = Object.fromEntries(fd.entries());
+        const res = await fetch(api, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+        const j = await res.json();
+        if (!j.success) return alert('Error: ' + (j.message||'Failed to add'));
+        e.target.reset();
+        fetchList(document.getElementById('search').value);
+      });
+
+      async function del(id) {
+        if (!confirm('Delete student?')) return;
+        const res = await fetch(api + '/' + id, { method: 'DELETE' });
+        const j = await res.json();
+        if (!j.success) return alert('Delete failed: ' + (j.message||''));
+        fetchList(document.getElementById('search').value);
+      }
+
+      document.getElementById('search').addEventListener('input', (e)=> {
+        const v = e.target.value;
+        fetchList(v);
+      });
+
+      // initial load
+      fetchList();
+    </script>
+  </body>
+</html>
+`);
+});
+
+/* --------------------- Start server & DB --------------------- */
+async function start() {
+  try {
+    await mongoose.connect(MONGO_URI, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    });
+    console.log("Connected to MongoDB:", MONGO_URI);
+    app.listen(PORT, () => {
+      console.log(`Server listening on http://localhost:${PORT}  (Open / in browser)`);
+    });
+  } catch (err) {
+    console.error("Failed to start:", err);
+    process.exit(1);
+  }
+}
+start();
