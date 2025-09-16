@@ -1,0 +1,223 @@
+/**
+ * ecommerce.js
+ * Single-file E-commerce Catalog (MVC-style) using MongoDB + Mongoose + Express
+ *
+ * Features:
+ * - Nested schema: Category → Products[] → Variants[]
+ * - CRUD endpoints for categories & products
+ * - Minimal frontend view to explore the catalog
+ *
+ * Usage:
+ * 1. npm init -y
+ * 2. npm i express mongoose
+ * 3. node ecommerce.js   (requires MongoDB running or Atlas URI)
+ *
+ * Endpoints:
+ * - GET    /api/categories
+ * - POST   /api/categories
+ * - GET    /api/categories/:id
+ * - PUT    /api/categories/:id
+ * - DELETE /api/categories/:id
+ * - POST   /api/categories/:id/products
+ * - PUT    /api/categories/:id/products/:pid
+ * - DELETE /api/categories/:id/products/:pid
+ */
+
+const express = require("express");
+const mongoose = require("mongoose");
+
+const app = express();
+app.use(express.json());
+
+/* ----------------------- Config ---------------------- */
+const PORT = process.env.PORT || 4000;
+const MONGO_URI =
+  process.env.MONGO_URI ||
+  "mongodb://127.0.0.1:27017/ecommerce_catalog_example";
+
+/* ----------------------- MODEL ----------------------- */
+// Variant schema (nested inside Product)
+const variantSchema = new mongoose.Schema({
+  sku: { type: String, required: true },
+  color: String,
+  size: String,
+  price: { type: Number, required: true },
+  stock: { type: Number, default: 0 },
+});
+
+// Product schema (nested inside Category)
+const productSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  description: String,
+  variants: [variantSchema],
+});
+
+// Category schema (top-level)
+const categorySchema = new mongoose.Schema(
+  {
+    name: { type: String, required: true, unique: true },
+    description: String,
+    products: [productSchema],
+  },
+  { timestamps: true }
+);
+
+const Category = mongoose.model("Category", categorySchema);
+
+/* -------------------- CONTROLLER --------------------- */
+const catalogController = {
+  async listCategories(req, res) {
+    try {
+      const cats = await Category.find().lean();
+      res.json({ success: true, data: cats });
+    } catch (e) {
+      res.status(500).json({ success: false, message: "Server error" });
+    }
+  },
+
+  async createCategory(req, res) {
+    try {
+      const cat = new Category(req.body);
+      const saved = await cat.save();
+      res.status(201).json({ success: true, data: saved });
+    } catch (e) {
+      res.status(400).json({ success: false, message: e.message });
+    }
+  },
+
+  async getCategory(req, res) {
+    try {
+      const cat = await Category.findById(req.params.id).lean();
+      if (!cat)
+        return res.status(404).json({ success: false, message: "Not found" });
+      res.json({ success: true, data: cat });
+    } catch {
+      res.status(400).json({ success: false, message: "Invalid id" });
+    }
+  },
+
+  async updateCategory(req, res) {
+    try {
+      const updated = await Category.findByIdAndUpdate(
+        req.params.id,
+        req.body,
+        { new: true, runValidators: true }
+      ).lean();
+      if (!updated)
+        return res.status(404).json({ success: false, message: "Not found" });
+      res.json({ success: true, data: updated });
+    } catch (e) {
+      res.status(400).json({ success: false, message: e.message });
+    }
+  },
+
+  async deleteCategory(req, res) {
+    try {
+      const del = await Category.findByIdAndDelete(req.params.id).lean();
+      if (!del)
+        return res.status(404).json({ success: false, message: "Not found" });
+      res.json({ success: true, message: "Deleted", data: del });
+    } catch {
+      res.status(400).json({ success: false, message: "Invalid id" });
+    }
+  },
+
+  // Products inside a category
+  async addProduct(req, res) {
+    try {
+      const cat = await Category.findById(req.params.id);
+      if (!cat)
+        return res.status(404).json({ success: false, message: "Category not found" });
+      cat.products.push(req.body);
+      await cat.save();
+      res.status(201).json({ success: true, data: cat });
+    } catch (e) {
+      res.status(400).json({ success: false, message: e.message });
+    }
+  },
+
+  async updateProduct(req, res) {
+    try {
+      const { id, pid } = req.params;
+      const cat = await Category.findById(id);
+      if (!cat)
+        return res.status(404).json({ success: false, message: "Category not found" });
+      const prod = cat.products.id(pid);
+      if (!prod)
+        return res.status(404).json({ success: false, message: "Product not found" });
+      Object.assign(prod, req.body);
+      await cat.save();
+      res.json({ success: true, data: prod });
+    } catch (e) {
+      res.status(400).json({ success: false, message: e.message });
+    }
+  },
+
+  async deleteProduct(req, res) {
+    try {
+      const { id, pid } = req.params;
+      const cat = await Category.findById(id);
+      if (!cat)
+        return res.status(404).json({ success: false, message: "Category not found" });
+      const prod = cat.products.id(pid);
+      if (!prod)
+        return res.status(404).json({ success: false, message: "Product not found" });
+      prod.deleteOne();
+      await cat.save();
+      res.json({ success: true, message: "Product deleted" });
+    } catch {
+      res.status(400).json({ success: false, message: "Invalid request" });
+    }
+  },
+};
+
+/* ---------------------- ROUTES ----------------------- */
+const router = express.Router();
+router.get("/categories", catalogController.listCategories);
+router.post("/categories", catalogController.createCategory);
+router.get("/categories/:id", catalogController.getCategory);
+router.put("/categories/:id", catalogController.updateCategory);
+router.delete("/categories/:id", catalogController.deleteCategory);
+router.post("/categories/:id/products", catalogController.addProduct);
+router.put("/categories/:id/products/:pid", catalogController.updateProduct);
+router.delete("/categories/:id/products/:pid", catalogController.deleteProduct);
+app.use("/api", router);
+
+/* ----------------------- VIEW ------------------------ */
+app.get("/", (req, res) => {
+  res.send(`<!doctype html>
+<html>
+<head><title>E-commerce Catalog</title></head>
+<body>
+  <h1>E-commerce Catalog</h1>
+  <p>Use <code>/api/categories</code> endpoints to manage catalog.</p>
+  <pre>
+Example:
+POST /api/categories
+{ "name": "Electronics", "description": "Devices" }
+
+POST /api/categories/:id/products
+{ "name": "Smartphone", "description": "Latest model", 
+  "variants": [{ "sku":"P1001", "color":"Black", "price":599, "stock":10 }] }
+  </pre>
+</body>
+</html>`);
+});
+
+/* ----------------- Server + DB start ----------------- */
+async function start() {
+  try {
+    await mongoose.connect(MONGO_URI, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    });
+    console.log("MongoDB connected");
+    app.listen(PORT, () =>
+      console.log(`Server running on http://localhost:${PORT}`)
+    );
+  } catch (e) {
+    console.error("Error starting server:", e);
+    process.exit(1);
+  }
+}
+start();
