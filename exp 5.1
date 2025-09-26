@@ -1,0 +1,144 @@
+# Dockerize a React Application — Single-file experiment
+
+This single-file document contains everything you need for the experiment **"Dockerize a React Application with Multi-Stage Build"**: a recommended multi-stage `Dockerfile`, a `.dockerignore`, and step-by-step commands and explanations. Copy the Dockerfile contents into a file named `Dockerfile` at the root of your React project.
+
+---
+
+## Dockerfile (multi-stage)
+
+```
+# --- Stage 1: Build the React app ---
+FROM node:18-alpine AS builder
+
+# Set working directory
+WORKDIR /app
+
+# Copy package manifests first (for better caching)
+COPY package.json package-lock.json* ./
+
+# Install dependencies (use npm ci if package-lock.json exists)
+RUN if [ -f package-lock.json ]; then npm ci --silent; else npm install --silent; fi
+
+# Copy app source
+COPY . .
+
+# Build the production optimized static files
+ARG REACT_APP_API_URL=""
+ENV REACT_APP_API_URL=$REACT_APP_API_URL
+RUN npm run build
+
+
+# --- Stage 2: Serve with nginx ---
+FROM nginx:stable-alpine
+
+# Remove default nginx static
+RUN rm -rf /usr/share/nginx/html/*
+
+# Copy nginx config (optional) — using default config with gzip and proper headers
+# You can provide your own nginx.conf by un-commenting and adapting the next line
+# COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+# Copy build from builder
+COPY --from=builder /app/build /usr/share/nginx/html
+
+# Expose port
+EXPOSE 80
+
+# Healthcheck (optional)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD wget -qO- --timeout=2 http://localhost/ || exit 1
+
+# Start nginx in foreground
+CMD ["nginx", "-g", "daemon off;"]
+```
+
+---
+
+## .dockerignore (place at project root)
+
+```
+node_modules
+build
+.dockerignore
+Dockerfile
+.git
+.gitignore
+npm-debug.log
+README.md
+.env
+.env.*
+```
+
+---
+
+## Build & Run (commands)
+
+1. Build the image (from project root):
+
+```
+docker build -t react-multistage:latest .
+```
+
+To pass build-time environment variables (for create-react-app prefixed with REACT_APP_*):
+
+```
+docker build --build-arg REACT_APP_API_URL="https://api.example.com" -t react-multistage:latest .
+```
+
+2. Run locally (map port 80 to host 3000 for convenience):
+
+```
+docker run --rm -p 3000:80 react-multistage:latest
+```
+
+Visit `http://localhost:3000` to see the app served by nginx.
+
+3. For production deployments, tag and push to your registry, then deploy using your orchestrator.
+
+```
+docker tag react-multistage:latest yourrepo/react-multistage:1.0.0
+docker push yourrepo/react-multistage:1.0.0
+```
+
+---
+
+## Notes & Tips
+
+- Using multi-stage builds keeps the final image small (only nginx and static files).
+- `npm ci` is preferred in CI environments when `package-lock.json` exists for reproducible installs.
+- If you need client-time config (change endpoints without rebuilding), consider using a small entrypoint script that substitutes environment variables into a static `config.js` at container start — otherwise Create React App inlines env vars at build time.
+- If you want HTTPS in container, terminate TLS at a load balancer or extend nginx config with certificates.
+- To debug build issues, run the builder stage interactively:
+
+```
+docker run --rm -it --entrypoint /bin/sh node:18-alpine
+# then run the same steps inside to reproduce
+```
+
+---
+
+## Example package.json scripts (ensure you have `build` script)
+
+```json
+{
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject"
+  }
+}
+```
+
+---
+
+
+- `Dockerfile` (the multi-stage file)
+- `.dockerignore`
+- Build command and image name
+- `docker run` command showing port mapping
+- Size comparison: image size of multi-stage build vs naive single-stage (optional)
+- Short explanation of what each Dockerfile stage does
+
+---
+
