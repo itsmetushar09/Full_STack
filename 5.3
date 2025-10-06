@@ -1,0 +1,142 @@
+name: CI/CD → AWS ECS (Fargate) with ALB
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  ECR_ACCOUNT_ID: ${{ secrets.ECR_ACCOUNT_ID }}
+  BACKEND_ECR_REPO: ${{ secrets.BACKEND_ECR_REPO }}
+  FRONTEND_ECR_REPO: ${{ secrets.FRONTEND_ECR_REPO }}
+  ECS_CLUSTER: ${{ secrets.ECS_CLUSTER }}
+  ECS_SERVICE: ${{ secrets.ECS_SERVICE }}
+  TASK_FAMILY: ${{ secrets.TASK_FAMILY }}
+  CONTAINER_NAME_BACKEND: ${{ secrets.CONTAINER_NAME_BACKEND }}
+  CONTAINER_NAME_FRONTEND: ${{ secrets.CONTAINER_NAME_FRONTEND }}
+  BACKEND_DOCKERFILE_PATH: backend/Dockerfile
+  FRONTEND_DOCKERFILE_PATH: frontend/Dockerfile
+  BACKEND_CONTEXT: backend
+  FRONTEND_CONTEXT: frontend
+  FARGATE_SUBNETS: ${{ secrets.FARGATE_SUBNETS }}
+  FARGATE_SECURITY_GROUPS: ${{ secrets.FARGATE_SECURITY_GROUPS }}
+
+jobs:
+  build-push-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Ensure jq is available
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Login to ECR
+        run: |
+          aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin ${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+
+      - name: Build & push backend image to ECR
+        run: |
+          BACKEND_IMAGE=${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${BACKEND_ECR_REPO}:$GITHUB_SHA
+          docker build -f ${BACKEND_DOCKERFILE_PATH} -t ${BACKEND_IMAGE} ${BACKEND_CONTEXT}
+          docker push ${BACKEND_IMAGE}
+          echo "::set-output name=backend_image::${BACKEND_IMAGE}"
+        id: backend_build
+
+      - name: Build & push frontend image to ECR
+        run: |
+          FRONTEND_IMAGE=${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${FRONTEND_ECR_REPO}:$GITHUB_SHA
+          docker build -f ${FRONTEND_DOCKERFILE_PATH} -t ${FRONTEND_IMAGE} ${FRONTEND_CONTEXT}
+          docker push ${FRONTEND_IMAGE}
+          echo "::set-output name=frontend_image::${FRONTEND_IMAGE}"
+        id: frontend_build
+
+      - name: Generate ECS task definition (Fargate) with updated images
+        run: |
+          BACKEND_IMAGE=${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${BACKEND_ECR_REPO}:$GITHUB_SHA
+          FRONTEND_IMAGE=${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${FRONTEND_ECR_REPO}:$GITHUB_SHA
+          cat > taskdef.json <<EOF
+{
+  "family": "${TASK_FAMILY}",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "${{ secrets.ECS_EXECUTION_ROLE_ARN }}",
+  "taskRoleArn": "${{ secrets.ECS_TASK_ROLE_ARN }}",
+  "containerDefinitions": [
+    {
+      "name": "${CONTAINER_NAME_BACKEND}",
+      "image": "${BACKEND_IMAGE}",
+      "essential": true,
+      "portMappings": [{"containerPort": 5000, "protocol": "tcp"}],
+      "environment": [
+        {"name":"NODE_ENV","value":"production"},
+        {"name":"ENV","value":"prod"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/${TASK_FAMILY}",
+          "awslogs-region": "${AWS_REGION}",
+          "awslogs-stream-prefix": "backend"
+        }
+      }
+    },
+    {
+      "name": "${CONTAINER_NAME_FRONTEND}",
+      "image": "${FRONTEND_IMAGE}",
+      "essential": true,
+      "portMappings": [{"containerPort": 3000, "protocol": "tcp"}],
+      "environment": [
+        {"name":"NODE_ENV","value":"production"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/${TASK_FAMILY}",
+          "awslogs-region": "${AWS_REGION}",
+          "awslogs-stream-prefix": "frontend"
+        }
+      }
+    }
+  ]
+}
+EOF
+          cat taskdef.json
+
+      - name: Register new task definition revision
+        id: register
+        run: |
+          resp=$(aws ecs register-task-definition --cli-input-json file://taskdef.json)
+          echo "$resp" > register_response.json
+          taskDefArn=$(jq -r '.taskDefinition.taskDefinitionArn' register_response.json)
+          echo "::set-output name=taskdef_arn::$taskDefArn"
+
+      - name: Update ECS service to use new task definition
+        run: |
+          TASKDEF_ARN=${{ steps.register.outputs.taskdef_arn }}
+          aws ecs update-service --cluster ${ECS_CLUSTER} --service ${ECS_SERVICE} --task-definition ${TASKDEF_ARN} --force-new-deployment
+
+      - name: Wait for service stable
+        run: |
+          aws ecs wait services-stable --cluster ${ECS_CLUSTER} --services ${ECS_SERVICE}
+
+      - name: Print deployed image URIs
+        run: |
+          echo "Backend image: ${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${BACKEND_ECR_REPO}:$GITHUB_SHA"
+          echo "Frontend image: ${ECR_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${FRONTEND_ECR_REPO}:$GITHUB_SHA"
